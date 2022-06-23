@@ -35,6 +35,9 @@ openstack role add --user osism-opstools-admin --project service admin
 opestack project create service
 openstack network create --project service service-testing
 openstack subnet create --project service --network service-testing  --subnet-range 192.168.42.0/24 service-testing-subnet
+
+# You may  want to use dragon's key. This will not upload the private key rather than create a pub-key and upload that
+openstack keypair create --user -osism-opstools-admin --private-key /tmp/ssh_id --type ssh service-testing-dragon
 ```
 
 ### Create /tmp/admin.rc file and upload to Vault

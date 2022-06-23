@@ -13,7 +13,6 @@
   gather_facts: true # get true facts from remote host
 
 - hosts: compute
-  become: true
   gather_facts: false # dont get facts from local host
   serial: 5
   connection: local
