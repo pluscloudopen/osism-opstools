@@ -1,0 +1,68 @@
+---
+##################################################################################################################
+#
+# Starts a VM, checks for metadata accessibility (SSH key at least) and deletes the VM on a specific hypervisor
+#
+# Needs OS_ environment variables set with admin power in order to create VMs forcibly
+#
+# on a specific hypervisor 
+#
+##################################################################################################################
+
+- hosts: compute
+  gather_facts: true # get true facts from remote host
+
+- hosts: compute
+  become: true
+  gather_facts: false # dont get facts from local host
+  serial: 5
+  connection: local
+  tasks:
+
+    - name: Setup variables
+      set_fact:
+        az: "{{ lookup('ansible.builtin.env', 'AZ_NAME', default='az1') }}"
+        flavor: "{{ lookup('ansible.builtin.env', 'FLAVOR_NAME', default='SCS-2V:4:20') }}"
+        image: "{{ lookup('ansible.builtin.env', 'IMAGE_NAME', default='Ubuntu 21.04') }}"
+        keypair_name: "{{ lookup('ansible.builtin.env', 'KEYPAIR_NAME', default='service-testing-dragon') }}"
+
+    - name: Create a new instance with some metadata and userdata
+      openstack.cloud.server:
+        state: present
+        image: "{{ image }}"
+        timeout: 600
+        flavor: "{{ flavor }}"
+        boot_from_volume: true
+        terminate_volume: true
+        delete_fip: true
+        key_name: "{{ keypair_name }}"
+        auto_ip: false
+        volume_size: 20
+        name: "{{ inventory_hostname }}-test"
+        availability_zone: "{{ [az, ansible_hostname ] | join(':')  }}"
+        userdata: |
+          {%- raw -%}#!/bin/bash
+          if curl -s http://169.254.169.254/openstack/latest/meta_data.json | grep "ssh-rsa AAAA" >/dev/null; then
+            echo "SSH-KEY-SUCCESS"
+          else
+            echo "SSH-KEY-FAILED"
+          fi
+          {% endraw %}
+        network: service-testing
+      register: my_server
+      notify: cleanup-vm
+
+    - name: Check for SSH key in metdata
+      shell:
+        cmd: "openstack console log show {{ my_server.id }} | grep SSH-KEY-SUCCESS"
+      register: console_log
+      until: "console_log.stdout_lines is match('.*SSH-KEY-SUCCESS.*')"
+      retries: 360
+      delay: 1
+
+  handlers:
+    - name: cleanup-vm
+      openstack.cloud.server:
+        state: absent
+        name: "{{ inventory_hostname }}-test"
+

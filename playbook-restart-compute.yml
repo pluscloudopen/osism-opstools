@@ -1,0 +1,297 @@
+---
+
+##############################################################################################################
+#
+# Check / Requisites / Repair part
+#
+##############################################################################################################
+
+
+- hosts: compute
+  become: true
+  serial: 1  # run this playbook one-by-one 
+  tasks:
+
+  - name: Assure that there are no VMs in ERROR state before we start
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack server list --host {{ ansible_hostname }}- --all-projects --status ERROR -c ID -f value"
+    register: errored_vms
+    changed_when: false
+    failed_when: "errored_vms.stdout_lines |length > 0"
+    check_mode: no
+
+  - name: Get hypervisor status
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack hypervisor list --matching {{ inventory_hostname }}- -c State -f value"
+    register: hv_state
+    changed_when: false
+    check_mode: no
+
+  - name: debug
+    debug:
+     var: 'hv_state.stdout_lines[0]'
+
+
+  - name: Restart ovn_controller container
+    ansible.builtin.shell:
+      cmd: "docker restart {{ item }}"
+    when: "hv_state.stdout_lines[0] == 'down'"
+    with_items:
+    - ovn_controller
+
+
+# TODO: Restart Openvswitch conditionally if ovn_controller does not restart
+
+  - name: Recheck Hypervisor status after ovn_controller restart
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack hypervisor list --matching {{ inventory_hostname }}- -c State -f value"
+    when: "hv_state.stdout_lines[0] == 'down'"
+    retries: 3
+    delay: 10
+    register: hv_state2
+    until: "hv_state2.stdout_lines[0] == 'up'"
+
+  - name: Restart nova containers
+    ansible.builtin.shell:
+      cmd: "docker restart {{ item }}"
+    when: "hv_state2 is defined and hv_state2.stdout_lines is defined and  hv_state2.stdout_lines[0] == 'down'"
+    with_items:
+    - nova_ssh
+    - nova_libvirt
+    - nova_compute
+
+  - name: Recheck Hypervisor status again after nova restart
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack hypervisor list --matching {{ inventory_hostname }}- -c State -f value"
+    when: "hv_state2 is defined and hv_state2.stdout_lines is defined and hv_state2.stdout_lines[0] == 'down'"
+    retries: 3
+    delay: 10
+    register: hv_state3
+    until: "hv_state3.stdout_lines[0] == 'up'"
+
+
+  - name: Determine primary cluster node to perform check operations on
+    set_fact:
+      primary_controller_hostname: "{{groups['control'][0]}}"    
+
+  - name: Check Ceph Health status
+    delegate_to: "{{ primary_controller_hostname }}"
+    become: true
+    ansible.builtin.shell:
+      cmd: "docker exec -t ceph-mgr-$(hostname) ceph health"
+    register: ceph_health
+    changed_when: false
+    check_mode: no
+
+
+  - name: debug
+    debug:
+     var: 'ceph_health.stdout_lines'
+
+  - name: Abort if Ceph is unhealthy
+    fail:
+      msg: "Ceph is unhealthy, aborting here. Check for yourself: run 'ceph -s' on controler node"
+    when: "'HEALTH_OK' not in ceph_health.stdout_lines[0]"
+
+##############################################################################################################
+#
+# Shutdown part
+#
+##############################################################################################################
+
+
+
+  - name: Disable Hypervisor in order to prevent new VMs from being created on this host
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack compute service set --disable --disable-reason 'Restart Needed' {{ ansible_hostname }} nova-compute"
+
+
+  - name: Getting list of all ACTIVE VMs for online migration
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack server list --host {{ ansible_hostname }} --all-projects --status ACTIVE -c ID -f value"
+    register: vms_to_migrate_online
+    changed_when: false
+    check_mode: no
+
+# TODO: How to solve weird states like this?
+# | OS-EXT-STS:power_state              | Running                                                  |
+# | OS-EXT-STS:task_state               | deleting                                                 |
+# | OS-EXT-STS:vm_state                 | active                                                   |
+
+  - name: Migrate ACTIVE VMs one-by-one
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack server migrate --live-migration --wait {{ item }}"
+    async: 3600  # Maximum allowed time in Seconds
+    poll: 5      # Polling Interval in Seconds
+    register: migrated_vms_active
+    with_items: "{{ vms_to_migrate_online.stdout_lines }}"
+
+
+  - name: Info about migrated ACTIVE VMs
+    debug:
+     var: migrated_vms_active
+
+  - name: Assure no ERROR state after live migration 
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack server list --host {{ ansible_hostname }} --all-projects --status ERROR -c ID -f value"
+    register: errored_vms_need_repair
+    changed_when: false
+    failed_when: "errored_vms_need_repair.stdout_lines |length > 0"
+    check_mode: no
+
+
+  - name: Getting list of all VMs for offline migration (assuming there is no ACTIVE VM anymore )
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack server list --host {{ ansible_hostname }} --all-projects -c ID -f value"
+    register: vms_to_migrate_offline
+    changed_when: false
+    check_mode: no
+
+  - name: Migrate all other VMs one-by-one and offline
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack server migrate --wait {{ item }}"
+    async: 3600  # Maximum allowed time in Seconds
+    poll: 5      # Polling Interval in Seconds
+    register: migrated_vms_offline
+    with_items: "{{ vms_to_migrate_offline.stdout_lines }}"
+
+
+  - name: Info about migrated ACTIVE VMs
+    debug:
+     var: migrated_vms_offline
+
+
+  - name: Assure that there are no VMs in ERROR state after migration
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack server list --host {{ ansible_hostname }} --all-projects --status ERROR -c ID -f value"
+    register: errored_vms2
+    changed_when: false
+    failed_when: "errored_vms2.stdout_lines |length > 0"
+    check_mode: no
+
+
+  - name: Assure that all VMs are migrated
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack server list --host {{ ansible_hostname }} --all-projects -c ID -f value"
+    register: vms_failed_to_migrate
+    changed_when: false
+    failed_when: "vms_failed_to_migrate.stdout_lines |length > 0"
+    check_mode: no
+
+  - name: Info about non migrated VMs
+    debug:
+     var: vms_failed_to_migrate
+
+
+  - name: Cross-Check VM state with libvirt
+    become: false
+    ansible.builtin.shell:
+      cmd: "/usr/bin/docker exec -ti nova_libvirt virsh list --all --uuid"
+    register: libvirt_vms_left
+    changed_when: false
+    failed_when: "libvirt_vms_left.stdout_lines |length > 0"
+    check_mode: no
+
+  - name: Info about non migrated VMs (libvirt point of view)
+    debug:
+     var: libvirt_vms_left
+
+
+  - name: Disable Ceph rebalancing and scrubbing
+    delegate_to: "{{ primary_controller_hostname }}"
+    ansible.builtin.shell:
+      cmd: "docker exec -t ceph-mgr-$(hostname) ceph osd set {{ item }}"
+    with_items:
+    - noout
+    - norebalance
+    - noscrub
+    - nodeep-scrub
+
+##############################################################################################################
+#
+# Maintenance part
+#
+##############################################################################################################
+
+  - name: Demo Only - Apt Dist-Upgrade
+    ansible.builtin.shell:
+      cmd: "whoami ; echo apt -y update && echo apt -y upgrade"
+
+  - name: Reboot compute noode
+    become: true
+    reboot:
+      reboot_timeout: 1800
+      connect_timeout: 5
+      post_reboot_delay: 120
+
+  - name: Get hypervisor status
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack hypervisor list --matching {{ inventory_hostname }}- -c State -f value"
+    register: hv_state_after_reboot
+    changed_when: false
+    retries: 90
+    delay: 10
+    until: hv_state_after_reboot.stdout_lines[0] == 'up'
+
+
+
+##############################################################################################################
+#
+# Startup part
+#
+##############################################################################################################
+
+  - name: Enable Ceph rebalancing and scrubbing
+    delegate_to: "{{ primary_controller_hostname }}"
+    ansible.builtin.shell:
+      cmd: "docker exec -t ceph-mgr-$(hostname) ceph osd unset {{ item }}"
+    with_items:
+    - noout
+    - norebalance
+    - noscrub
+    - nodeep-scrub
+
+### TODO am besten hier noch ein Wait einbauen
+
+  - name: Check Ceph Health status again
+    delegate_to: "{{ primary_controller_hostname }}"
+    become: true
+    ansible.builtin.shell:
+      cmd: "docker exec -t ceph-mgr-$(hostname) ceph health"
+    changed_when: false
+    failed_when: "'HEALTH_OK' not in ceph_health.stdout_lines[0]"
+    check_mode: no
+
+
+  - name: Enable hypervisor in order to prevent new VMs from being created on this host
+    delegate_to: localhost
+    become: false
+    ansible.builtin.shell:
+      cmd: "openstack compute service set --enable {{ ansible_hostname }} nova-compute"
+

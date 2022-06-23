@@ -1,0 +1,35 @@
+---
+
+##############################################################################################################
+#
+# Configure ACPI modules for HP proliant machines
+# see: https://wiki.froberg.org/en/hp-proliant-acpi-error-power-meter
+#
+##############################################################################################################
+
+
+- hosts: all
+  become: true
+  serial: 1  # run this playbook one-by-one
+  tasks:
+
+  - name: Create config file for ACPI kernel modules
+    ansible.builtin.template:
+      src: hwinfo.conf.j2
+      dest: /etc/modules-load.d/hwinfo.conf
+      owner: root
+      group: root
+      mode: '0644'
+    notify:
+    - load-modules
+
+  handlers:
+  - name: load-modules
+    become: true
+    ansible.builtin.shell:
+      cmd: "modprobe {{ item }}"
+    with_items:
+    - ipmi_si
+    - acpi_ipmi
+    - acpi_power_meter
+
