@@ -106,6 +106,15 @@ The following code will configure ACPI kernel modules correctly for *all* HP pro
 osism-opstools-cmd ansible-playbook -i inventories/$REGION_NAME acpi.yml
 ```
 
+
+#### Check metadata agent
+
+The following code will check metadata agents in $REGION_NAME:
+
+```bash
+osism-opstools-cmd ansible-playbook -i inventories/$REGION_NAME playbook-start-check-delete-vm.yml
+```
+
 #### General admin tasks
 
 ```bash
