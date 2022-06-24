@@ -37,7 +37,7 @@ openstack network create --project service service-testing
 openstack subnet create --project service --network service-testing  --subnet-range 192.168.42.0/24 service-testing-subnet
 
 # You may  want to use dragon's key. This will not upload the private key rather than create a pub-key and upload that
-openstack keypair create --user -osism-opstools-admin --private-key /tmp/ssh_id --type ssh service-testing-dragon
+openstack keypair create --user osism-opstools-admin --private-key /tmp/ssh_id --type ssh service-testing-dragon
 ```
 
 ### Create /tmp/admin.rc file and upload to Vault
@@ -64,7 +64,7 @@ cat /tmp/admin.rc |  vault write openstack/manage-openstack/some_region env=-
 - store it to /tmp/id_rsa
 
 ```bash
-cat /tmp/id_rsa |  vault write openstack/dev2.api.pco.get-cloud.io/dragon_id_rsa data=-
+cat /tmp/id_rsa |  vault write openstack/some_region/dragon_id_rsa data=-
 ```
 
 ## Usage
