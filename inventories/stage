@@ -1,0 +1,16 @@
+[control]
+
+control1 ansible_host=10.10.1.11
+control2 ansible_host=10.10.1.12
+control3 ansible_host=10.10.1.13
+
+[manager]
+manager1 ansible_host=10.10.1.1
+
+[compute]
+compute1 ansible_host=10.10.1.21
+compute2 ansible_host=10.10.1.22
+compute3 ansible_host=10.10.1.23
+compute4 ansible_host=10.10.1.24
+compute5 ansible_host=10.10.1.25
+
