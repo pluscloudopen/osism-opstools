@@ -15,6 +15,7 @@ RUN groupadd -g 45000 dragon && useradd -g 45000 -u 45000 -s /bin/bash -c "Opens
     apt clean
 
 RUN setcap cap_ipc_lock= /usr/bin/vault
+COPY docker-files /
 
 
 # Install Python/Ansible stuff. We need Ansible >= 2.11. This currently only available via Python pip installation
