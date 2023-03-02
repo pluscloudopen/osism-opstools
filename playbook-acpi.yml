@@ -13,6 +13,7 @@
   tasks:
 
   - name: Create config file for ACPI kernel modules
+    become: true
     ansible.builtin.template:
       src: hwinfo.conf.j2
       dest: /etc/modules-load.d/hwinfo.conf
